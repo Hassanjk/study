@@ -3,10 +3,16 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAlert } from '../../contexts/AlertContext';
 import { parseApiError } from '../../utils/errorHandler';
+import { createClient } from '@supabase/supabase-js';
+
+// Create Supabase client for direct role checking
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 const Login = () => {
   const navigate = useNavigate();
-  const { signIn, isLoading } = useAuth();
+  const { signIn, isLoading, setUserRole } = useAuth();
   const { showAlert } = useAlert();
   const [formData, setFormData] = useState({
     email: '',
@@ -21,6 +27,43 @@ const Login = () => {
     });
   };
 
+  // Function to fetch role directly from the database
+  const fetchUserRole = async (userId: string) => {
+    try {
+      // Try the direct query first
+      const { data: userData, error: userError } = await supabase
+        .from('user_roles')
+        .select('role_name')
+        .eq('id', userId)
+        .single();
+      
+      if (userError || !userData) {
+        console.error('Error getting user role from view:', userError);
+        
+        // Fallback to direct query on profiles and roles
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .select('role_id')
+          .eq('id', userId)
+          .single();
+          
+        if (profileError || !profileData) {
+          console.error('Error getting profile role_id:', profileError);
+          return 'student'; // Default fallback
+        }
+        
+        // Convert role_id to role name
+        return profileData.role_id === 1 ? 'admin' : 
+               profileData.role_id === 2 ? 'teacher' : 'student';
+      }
+      
+      return userData.role_name;
+    } catch (error) {
+      console.error('Error in fetchUserRole:', error);
+      return 'student'; // Default fallback
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -32,6 +75,17 @@ const Login = () => {
     
     try {
       await signIn(formData.email, formData.password);
+      
+      // Get the current user to get the ID
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (user) {
+        // Fetch the role directly and set it
+        const roleName = await fetchUserRole(user.id);
+        setUserRole(roleName);
+        console.log('Role set after login:', roleName);
+      }
+      
       showAlert('success', 'Successfully signed in!');
       navigate('/dashboard');
     } catch (err) {

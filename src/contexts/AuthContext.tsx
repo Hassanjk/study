@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { createClient, SupabaseClient, User, AuthError } from '@supabase/supabase-js';
+import { createClient, User } from '@supabase/supabase-js';
 
 // Define types
 interface UserProfile {
@@ -7,6 +7,9 @@ interface UserProfile {
   username: string;
   email: string;
   full_name: string | null;
+  name: string | null;
+  surname: string | null;
+  student_id: string | null;
   avatar_url: string | null;
   role: 'admin' | 'teacher' | 'student';
 }
@@ -16,11 +19,13 @@ interface AuthContextType {
   profile: UserProfile | null;
   isLoading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, username: string, fullName: string, roleId?: number) => Promise<void>;
+  signUp: (email: string, password: string, username: string, fullName: string, roleId?: number, extraData?: Record<string, any>) => Promise<void>;
   signOut: () => Promise<void>;
   isAdmin: () => boolean;
   isTeacher: () => boolean;
   isStudent: () => boolean;
+  setUserRole: (role: string) => void;
+  getUserRole: () => string | null;
 }
 
 // Create the context
@@ -37,40 +42,116 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Fetch user profile data
+  // Store user role in localStorage for persistence
+  const setUserRole = (role: string) => {
+    console.log("🔑 Setting user role in localStorage:", role);
+    localStorage.setItem('userRole', role);
+    
+    // Force profile update to trigger re-renders that depend on role
+    if (profile) {
+      setProfile({
+        ...profile,
+        role: role as 'admin' | 'teacher' | 'student'
+      });
+    }
+  };
+
+  const getUserRole = () => {
+    const role = localStorage.getItem('userRole');
+    console.log("🔍 Getting user role from localStorage:", role);
+    return role;
+  };
+
+  // Fetch user profile data using a simplified approach
   const fetchProfile = async (userId: string) => {
     try {
+      console.log('👤 Fetching profile for user ID:', userId);
+      
+      // First try to get role via RPC function (most reliable)
+      try {
+        const { data: roleData, error: roleError } = await supabase
+          .rpc('get_user_role', { user_id: userId });
+          
+        if (!roleError && roleData) {
+          console.log("✅ Role fetched via RPC:", roleData);
+          setUserRole(roleData);
+        } else {
+          console.error("❌ Error fetching role via RPC:", roleError);
+        }
+      } catch (rpcError) {
+        console.error("❌ RPC call failed:", rpcError);
+      }
+      
+      // Fetch profile from user_roles view instead of profiles table
+      try {
+        const { data: userData, error: userError } = await supabase
+          .from('user_roles')
+          .select('*')
+          .eq('id', userId)
+          .single();
+          
+        if (!userError && userData) {
+          console.log("✅ User role view data:", userData);
+          setUserRole(userData.role_name);
+        } else {
+          console.error("❌ Error fetching from user_roles view:", userError);
+        }
+      } catch (viewError) {
+        console.error("❌ User roles view query failed:", viewError);
+      }
+      
+      // Fetch basic profile info
       const { data, error } = await supabase
         .from('profiles')
-        .select(`
-          id,
-          username, 
-          email,
-          full_name, 
-          avatar_url,
-          role_id,
-          roles (
-            name
-          )
-        `)
+        .select('id, username, email, full_name, name, surname, student_id, avatar_url, role_id')
         .eq('id', userId)
         .single();
 
-      if (error) throw error;
-
+      if (error) {
+        console.error('❌ Error fetching profile:', error);
+        
+        // Create minimal profile from user metadata
+        if (user) {
+          const storedRole = getUserRole() || 'student';
+          console.log("📝 Creating profile from user metadata with role:", storedRole);
+          
+          setProfile({
+            id: user.id,
+            username: user.user_metadata?.username || user.email?.split('@')[0] || 'user',
+            email: user.email || '',
+            full_name: user.user_metadata?.full_name || null,
+            name: user.user_metadata?.name || null,
+            surname: user.user_metadata?.surname || null,
+            student_id: user.user_metadata?.student_id || null,
+            avatar_url: null,
+            role: storedRole as 'admin' | 'teacher' | 'student',
+          });
+        }
+        return;
+      }
+      
       if (data) {
+        // Get role name from localStorage or fallback mechanism
+        const roleFromStorage = getUserRole();
+        const roleName = roleFromStorage || 
+                       (data.role_id === 1 ? 'admin' : 
+                        data.role_id === 2 ? 'teacher' : 'student');
+        
+        console.log("📝 Setting profile with role:", roleName, "from:", 
+                   roleFromStorage ? "localStorage" : "role_id");
+        
         setProfile({
-          id: data.id,
-          username: data.username,
-          email: data.email,
-          full_name: data.full_name,
-          avatar_url: data.avatar_url,
-          role: data.roles?.name || 'student'
+          ...data,
+          role: roleName as 'admin' | 'teacher' | 'student',
         });
+        
+        // Make sure localStorage has the latest role
+        if (!roleFromStorage) {
+          setUserRole(roleName);
+        }
       }
     } catch (error) {
-      console.error('Error fetching profile:', error);
-      // We don't throw here since we still want the app to work even if profile fetch fails
+      console.error('❌ Error in fetchProfile:', error);
     }
   };
 
@@ -102,6 +183,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         } else {
           setUser(null);
           setProfile(null);
+          localStorage.removeItem('userRole');
         }
         setIsLoading(false);
       }
@@ -128,6 +210,14 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       
       if (data.user) {
         setUser(data.user);
+        
+        // Attempt to get role directly from auth metadata to avoid recursion
+        const roleId = data.user.user_metadata?.role_id;
+        if (roleId) {
+          const roleName = roleId === 1 ? 'admin' : roleId === 2 ? 'teacher' : 'student';
+          setUserRole(roleName);
+        }
+        
         await fetchProfile(data.user.id);
       }
     } catch (error) {
@@ -139,9 +229,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   // Sign up
-  const signUp = async (email: string, password: string, username: string, fullName: string, roleId: number = 3) => {
+  const signUp = async (email: string, password: string, username: string, fullName: string, roleId: number = 3, extraData: Record<string, any> = {}) => {
     try {
       setIsLoading(true);
+      
+      console.log('SignUp called with roleId:', roleId);
       
       // First, sign up the user with Supabase Auth
       const { data: authData, error: authError } = await supabase.auth.signUp({
@@ -151,7 +243,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           data: {
             username,
             full_name: fullName,
-            role_id: roleId
+            role_id: roleId, // Explicitly pass as number
+            name: extraData.name || '',
+            surname: extraData.surname || '',
+            student_id: extraData.student_id || '',
           }
         }
       });
@@ -162,7 +257,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         throw new Error('Failed to create user account');
       }
 
-      // Manually create the profile if the trigger doesn't work
+      // Set role directly in localStorage
+      const roleName = roleId === 1 ? 'admin' : roleId === 2 ? 'teacher' : 'student';
+      setUserRole(roleName);
+      
+      // Create or update profile directly
       const { error: profileError } = await supabase
         .from('profiles')
         .upsert([
@@ -171,17 +270,31 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             email,
             username,
             full_name: fullName,
-            role_id: roleId
+            role_id: roleId,
+            name: extraData.name || '',
+            surname: extraData.surname || '',
+            student_id: extraData.student_id || '',
           }
         ]);
         
       if (profileError) {
         console.error('Error updating profile:', profileError);
-        // We don't throw here since auth is created
       }
         
       setUser(authData.user);
-      await fetchProfile(authData.user.id);
+      
+      // Create profile object directly instead of fetching
+      setProfile({
+        id: authData.user.id,
+        username,
+        email,
+        full_name: fullName,
+        name: extraData.name || null,
+        surname: extraData.surname || null,
+        student_id: extraData.student_id || null,
+        avatar_url: null,
+        role: roleName as 'admin' | 'teacher' | 'student',
+      });
       
     } catch (error) {
       console.error('Sign-up error:', error);
@@ -200,6 +313,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       
       setUser(null);
       setProfile(null);
+      localStorage.removeItem('userRole');
     } catch (error) {
       console.error('Sign-out error:', error);
       throw error;
@@ -208,11 +322,27 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  // Role check functions
-  const isAdmin = () => profile?.role === 'admin';
-  const isTeacher = () => profile?.role === 'teacher' || profile?.role === 'admin';
-  const isStudent = () => !!profile; // Any authenticated user
-
+  // Role check functions using local storage as source of truth
+  const isAdmin = () => {
+    const role = getUserRole();
+    const result = role === 'admin';
+    console.log("👑 isAdmin check:", { role, result });
+    return result;
+  };
+  
+  const isTeacher = () => {
+    const role = getUserRole();
+    const result = role === 'teacher' || role === 'admin';
+    console.log("👨‍🏫 isTeacher check:", { role, result });
+    return result;
+  };
+  
+  const isStudent = () => {
+    const hasAuth = !!user;
+    console.log("🧑‍🎓 isStudent check:", { hasAuth, role: getUserRole() });
+    return hasAuth;
+  };
+  
   const value = {
     user,
     profile,
@@ -223,6 +353,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     isAdmin,
     isTeacher,
     isStudent,
+    setUserRole,
+    getUserRole,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

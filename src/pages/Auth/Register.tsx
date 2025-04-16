@@ -28,7 +28,12 @@ const Register = () => {
     password: '',
     confirmPassword: '',
     roleId: 3, // Default to student role (id=3)
+    studentId: '',
+    registrationCode: '',
   });
+
+  const [verifyingCode, setVerifyingCode] = useState(false);
+  const [codeVerified, setCodeVerified] = useState(false);
 
   // Fetch available roles
   useEffect(() => {
@@ -56,6 +61,65 @@ const Register = () => {
       ...formData,
       [name]: name === 'roleId' ? parseInt(value) : value,
     });
+
+    // Reset code verification when role changes
+    if (name === 'roleId') {
+      setCodeVerified(false);
+    }
+  };
+
+  const isAdminOrTeacher = () => {
+    return formData.roleId === 1 || formData.roleId === 2;
+  };
+
+  const verifyRegistrationCode = async () => {
+    if (!formData.registrationCode) {
+      showAlert('error', 'Please enter a registration code');
+      return;
+    }
+
+    try {
+      setVerifyingCode(true);
+      
+      // First, get the role name for better error messages
+      const roleName = getSelectedRoleName();
+      
+      // Simplified query to avoid policies issues
+      const { data, error } = await supabase
+        .from('registration_codes')
+        .select('*')
+        .eq('code', formData.registrationCode)
+        .single();
+      
+      if (error) {
+        console.error('Registration code verification error:', error);
+        showAlert('error', `Invalid registration code: ${error.message}`);
+        setCodeVerified(false);
+        return;
+      }
+      
+      // Manually check if the code matches the role and is unused
+      if (!data || data.is_used) {
+        showAlert('error', `This registration code has already been used`);
+        setCodeVerified(false);
+        return;
+      }
+      
+      if (data.role_id !== formData.roleId) {
+        showAlert('error', `This code is for a different role. Please select the correct role or use a different code.`);
+        setCodeVerified(false);
+        return;
+      }
+      
+      showAlert('success', `Registration code verified successfully for ${roleName} role`);
+      setCodeVerified(true);
+    } catch (err) {
+      console.error('Error verifying code:', err);
+      showAlert('error', 'Failed to verify registration code');
+      setCodeVerified(false);
+    } finally {
+      setVerifyingCode(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -63,7 +127,7 @@ const Register = () => {
     
     // Simple validation
     if (!formData.name || !formData.surname || !formData.email || !formData.password || !formData.confirmPassword) {
-      showAlert('error', 'Please fill in all fields');
+      showAlert('error', 'Please fill in all required fields');
       return;
     }
     
@@ -77,12 +141,53 @@ const Register = () => {
       return;
     }
     
+    // Role-specific validation
+    if (formData.roleId === 3 && !formData.studentId) { // Student
+      showAlert('error', 'Please enter your student ID');
+      return;
+    }
+    
+    if (isAdminOrTeacher() && !codeVerified) {
+      showAlert('error', 'Please verify your registration code first');
+      return;
+    }
+    
     try {
-      const fullName = `${formData.name} ${formData.surname}`;
       const username = formData.email.split('@')[0]; // Create a simple username from email
       
-      await signUp(formData.email, formData.password, username, fullName, formData.roleId);
-      showAlert('success', 'Account created successfully!');
+      // Add extra profile data based on role
+      const extraData: Record<string, any> = {
+        name: formData.name,
+        surname: formData.surname
+      };
+      
+      // Add student ID if applicable
+      if (formData.roleId === 3) {
+        extraData.student_id = formData.studentId;
+      }
+      
+      console.log('Registering with role ID:', formData.roleId);
+      
+      // Register user
+      await signUp(
+        formData.email, 
+        formData.password, 
+        username, 
+        `${formData.name} ${formData.surname}`, 
+        formData.roleId, // Ensure this is explicitly passed
+        extraData
+      );
+      
+      // If we got here, registration succeeded
+      // If admin or teacher, mark the registration code as used
+      if (isAdminOrTeacher()) {
+        await supabase
+          .from('registration_codes')
+          .update({ is_used: true })
+          .eq('code', formData.registrationCode);
+      }
+      
+      showAlert('success', `Account created successfully as ${getSelectedRoleName()}!`);
       navigate('/dashboard');
     } catch (err) {
       const { message } = parseApiError(err);
@@ -91,6 +196,11 @@ const Register = () => {
       // Log the error for debugging
       console.error('Registration error:', err);
     }
+  };
+
+  const getSelectedRoleName = () => {
+    const role = roles.find(r => r.id === formData.roleId);
+    return role?.name || '';
   };
 
   return (
@@ -107,6 +217,62 @@ const Register = () => {
             <div className="bg-white rounded-lg border-0 shadow-lg">
               <div className="p-6">
                 <form onSubmit={handleSubmit}>
+                  <div className="mb-4">
+                    <label className="block text-gray-700 text-sm font-medium mb-1">Role</label>
+                    <select
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+                      name="roleId"
+                      value={formData.roleId}
+                      onChange={handleChange}
+                      required
+                    >
+                      {roles.map((role) => (
+                        <option key={role.id} value={role.id}>
+                          {role.name} - {role.description}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  
+                  {isAdminOrTeacher() && (
+                    <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                      <div className="flex justify-between items-center">
+                        <label className="block text-gray-700 text-sm font-medium mb-1">
+                          {getSelectedRoleName()} Registration Code
+                        </label>
+                        {codeVerified && (
+                          <span className="text-green-500 text-xs font-medium">
+                            ✓ Verified
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+                          name="registrationCode"
+                          placeholder="Enter registration code"
+                          value={formData.registrationCode}
+                          onChange={handleChange}
+                          required={isAdminOrTeacher()}
+                        />
+                        <button 
+                          type="button"
+                          onClick={verifyRegistrationCode}
+                          disabled={verifyingCode || !formData.registrationCode || codeVerified}
+                          className={`px-4 py-2 bg-blue-100 text-blue-800 rounded-md hover:bg-blue-200 transition-colors ${
+                            (verifyingCode || !formData.registrationCode || codeVerified) ? 'opacity-50 cursor-not-allowed' : ''
+                          }`}
+                        >
+                          {verifyingCode ? 'Verifying...' : 'Verify'}
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        This code is required for {getSelectedRoleName()} registration
+                      </p>
+                    </div>
+                  )}
+
                   <div className="mb-4">
                     <label className="block text-gray-700 text-sm font-medium mb-1">Name</label>
                     <input
@@ -132,6 +298,21 @@ const Register = () => {
                       required
                     />
                   </div>
+                  
+                  {formData.roleId === 3 && (
+                    <div className="mb-4">
+                      <label className="block text-gray-700 text-sm font-medium mb-1">Student ID</label>
+                      <input
+                        type="text"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+                        name="studentId"
+                        placeholder="Enter your student ID number"
+                        value={formData.studentId}
+                        onChange={handleChange}
+                        required={formData.roleId === 3}
+                      />
+                    </div>
+                  )}
 
                   <div className="mb-4">
                     <label className="block text-gray-700 text-sm font-medium mb-1">Email</label>
@@ -172,23 +353,6 @@ const Register = () => {
                     />
                   </div>
 
-                  <div className="mb-4">
-                    <label className="block text-gray-700 text-sm font-medium mb-1">Role</label>
-                    <select
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
-                      name="roleId"
-                      value={formData.roleId}
-                      onChange={handleChange}
-                      required
-                    >
-                      {roles.map((role) => (
-                        <option key={role.id} value={role.id}>
-                          {role.name} - {role.description}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
                   <div className="text-center mt-6 flex flex-wrap justify-center gap-3">
                     <button 
                       type="button" 
@@ -199,9 +363,9 @@ const Register = () => {
                     </button>
                     <button 
                       type="submit"
-                      disabled={isLoading}
+                      disabled={isLoading || (isAdminOrTeacher() && !codeVerified)}
                       className={`flex items-center px-4 py-2 bg-primary hover:bg-primary-dark text-white rounded-md transition-colors ${
-                        isLoading ? 'opacity-70 cursor-not-allowed' : ''
+                        (isLoading || (isAdminOrTeacher() && !codeVerified)) ? 'opacity-70 cursor-not-allowed' : ''
                       }`}
                     >
                       {isLoading ? (
