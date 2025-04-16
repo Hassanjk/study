@@ -1,42 +1,96 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
+import { createClient } from '@supabase/supabase-js';
+import { useAlert } from '../../contexts/AlertContext';
+import { parseApiError } from '../../utils/errorHandler';
+
+// Create Supabase client for role fetching
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+interface Role {
+  id: number;
+  name: string;
+  description: string;
+}
 
 const Register = () => {
   const navigate = useNavigate();
+  const { signUp, isLoading } = useAuth();
+  const { showAlert } = useAlert();
+  const [roles, setRoles] = useState<Role[]>([]);
   const [formData, setFormData] = useState({
     name: '',
     surname: '',
     email: '',
     password: '',
     confirmPassword: '',
+    roleId: 3, // Default to student role (id=3)
   });
-  const [error, setError] = useState('');
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Fetch available roles
+  useEffect(() => {
+    const fetchRoles = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('roles')
+          .select('id, name, description')
+          .order('id');
+        
+        if (error) throw error;
+        if (data) setRoles(data);
+      } catch (err) {
+        console.error('Error fetching roles:', err);
+        showAlert('error', 'Failed to load role options. Please refresh the page.');
+      }
+    };
+
+    fetchRoles();
+  }, [showAlert]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData({
       ...formData,
-      [name]: value,
+      [name]: name === 'roleId' ? parseInt(value) : value,
     });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     // Simple validation
     if (!formData.name || !formData.surname || !formData.email || !formData.password || !formData.confirmPassword) {
-      setError('Please fill in all fields');
+      showAlert('error', 'Please fill in all fields');
       return;
     }
     
     if (formData.password !== formData.confirmPassword) {
-      setError('Passwords do not match');
+      showAlert('error', 'Passwords do not match');
       return;
     }
     
-    // For demo purposes - navigate to dashboard on submit
-    // In a real app, you would register the user with the backend
-    navigate('/dashboard');
+    if (formData.password.length < 6) {
+      showAlert('error', 'Password must be at least 6 characters long');
+      return;
+    }
+    
+    try {
+      const fullName = `${formData.name} ${formData.surname}`;
+      const username = formData.email.split('@')[0]; // Create a simple username from email
+      
+      await signUp(formData.email, formData.password, username, fullName, formData.roleId);
+      showAlert('success', 'Account created successfully!');
+      navigate('/dashboard');
+    } catch (err) {
+      const { message } = parseApiError(err);
+      showAlert('error', message);
+      
+      // Log the error for debugging
+      console.error('Registration error:', err);
+    }
   };
 
   return (
@@ -53,12 +107,6 @@ const Register = () => {
             <div className="bg-white rounded-lg border-0 shadow-lg">
               <div className="p-6">
                 <form onSubmit={handleSubmit}>
-                  {error && (
-                    <div className="bg-red-50 text-red-700 p-3 rounded-md text-sm mb-4">
-                      {error}
-                    </div>
-                  )}
-
                   <div className="mb-4">
                     <label className="block text-gray-700 text-sm font-medium mb-1">Name</label>
                     <input
@@ -124,6 +172,23 @@ const Register = () => {
                     />
                   </div>
 
+                  <div className="mb-4">
+                    <label className="block text-gray-700 text-sm font-medium mb-1">Role</label>
+                    <select
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+                      name="roleId"
+                      value={formData.roleId}
+                      onChange={handleChange}
+                      required
+                    >
+                      {roles.map((role) => (
+                        <option key={role.id} value={role.id}>
+                          {role.name} - {role.description}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
                   <div className="text-center mt-6 flex flex-wrap justify-center gap-3">
                     <button 
                       type="button" 
@@ -134,9 +199,24 @@ const Register = () => {
                     </button>
                     <button 
                       type="submit"
-                      className="flex items-center px-4 py-2 bg-primary hover:bg-primary-dark text-white rounded-md transition-colors"
+                      disabled={isLoading}
+                      className={`flex items-center px-4 py-2 bg-primary hover:bg-primary-dark text-white rounded-md transition-colors ${
+                        isLoading ? 'opacity-70 cursor-not-allowed' : ''
+                      }`}
                     >
-                      Sign Up <span className="bi bi-arrow-right ml-2"></span>
+                      {isLoading ? (
+                        <>
+                          <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          Creating Account...
+                        </>
+                      ) : (
+                        <>
+                          Sign Up <span className="bi bi-arrow-right ml-2"></span>
+                        </>
+                      )}
                     </button>
                   </div>
 
