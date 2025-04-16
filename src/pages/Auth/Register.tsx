@@ -204,7 +204,7 @@ const Register = () => {
   };
 
   return (
-    <section className="w-100 min-h-screen bg-gradient-to-br from-gray-50 to-blue-50 py-12">
+    <section className="w-100 min-h-screen py-12">
       <div className="container mx-auto px-4">
         <div className="flex justify-center items-center">
           <div className="w-full md:w-1/2 sm:w-2/3">
@@ -394,11 +394,11 @@ const Register = () => {
         </div>
       </div>
 
-      {/* Background image for decoration - using Unsplash */}
+      {/* Background image for decoration - using local image */}
       <div 
-        className="fixed -z-10 inset-0 opacity-10"
+        className="fixed -z-10 inset-0"
         style={{
-          backgroundImage: "url('https://images.unsplash.com/photo-1498050108023-c5249f4df085?q=80&w=1472&auto=format&fit=crop')",
+          backgroundImage: "url('/assets/img/sr.jpg')",
           backgroundSize: 'cover',
           backgroundPosition: 'center',
         }}
